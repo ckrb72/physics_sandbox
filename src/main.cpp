@@ -42,6 +42,8 @@ int main()
     glfwSetCursorPosCallback(window, cursor_position_callback);
     glfwSetKeyCallback(window, keypress_callback);
 
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+
     glfwMakeContextCurrent(window);
 
     if(!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
@@ -100,7 +102,7 @@ int main()
 
     previous_time = glfwGetTime();
 
-    double delta_time = 0.0;
+    float delta_time = 0.0;
 
     double xpos_prev, ypos_prev;
     glfwGetCursorPos(window, &xpos_prev, &ypos_prev);
@@ -119,8 +121,6 @@ int main()
         // Handle Events
         glfwPollEvents();
 
-        std::cout << key_map[GLFW_KEY_A] << std::endl;
-
         // Update Cursor
         double xpos, ypos;
         glfwGetCursorPos(window, &xpos, &ypos);
@@ -130,6 +130,7 @@ int main()
         xpos_prev = xpos;
         ypos_prev = ypos;
 
+        // Update Camera
         theta += cursor_dx * sensitivity;
         phi += cursor_dy * sensitivity;
         if (phi >= 180.0) phi = 179.0;
@@ -139,8 +140,18 @@ int main()
         cam_dir.z = cos(glm::radians(-theta)) * cos(glm::radians(phi));
         cam_dir.y = -sin(glm::radians(phi));
 
+        
+        if (key_map[GLFW_KEY_W]) cam_pos += cam_dir * delta_time;
+        if (key_map[GLFW_KEY_S]) cam_pos -= cam_dir * delta_time;
+        if (key_map[GLFW_KEY_D]) cam_pos += glm::normalize(glm::cross(cam_dir, glm::vec3(0.0, 1.0, 0.0))) * delta_time;
+        if (key_map[GLFW_KEY_A]) cam_pos -= glm::normalize(glm::cross(cam_dir, glm::vec3(0.0, 1.0, 0.0))) * delta_time;
+        if (key_map[GLFW_KEY_SPACE]) cam_pos.y += 1.0 * delta_time;
+        if (key_map[GLFW_KEY_LEFT_SHIFT]) cam_pos.y -= 1.0 * delta_time;
+
+
         view = glm::lookAt(cam_pos, cam_pos + cam_dir, glm::vec3(0.0, 1.0, 0.0));
 
+        std::cout << "Theta: " << theta << " Phi: " << phi << std::endl;
 
         // Render
         glClear(GL_COLOR_BUFFER_BIT);
@@ -171,7 +182,14 @@ int main()
 
 static void keypress_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
-    key_map[key] = (action == GLFW_PRESS);
+    if (action == GLFW_PRESS)
+    {
+        key_map[key] = 1;
+    }
+    else if (action == GLFW_RELEASE)
+    {
+        key_map[key] = 0;
+    }
 }
 
 static void cursor_position_callback(GLFWwindow* window, double xpos, double ypos)
