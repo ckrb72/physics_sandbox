@@ -9,11 +9,19 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <assimp/Importer.hpp>      // C++ importer interface
+#include <assimp/scene.h>           // Output data structure
+#include <assimp/postprocess.h>     // Post processing flags
+
+#include <thread>
+#include <mutex>
+
 const uint32_t WIN_WIDTH = 1920;
 const uint32_t WIN_HEIGHT = 1080;
-
 std::map<int, int> key_map;
+Assimp::Importer importer;
 
+static uint32_t load_model(const std::string& path);
 static void keypress_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
 static void cursor_position_callback(GLFWwindow* window, double xpos, double ypos);
 static void window_resize_callback(GLFWwindow* window, int width, int height);
@@ -21,11 +29,12 @@ static uint32_t compile_shader(const std::string& vertex, const std::string& fra
 static std::string read_file_text(const std::string& path);
 
 double previous_time = 0;
+bool cursor_locked = true;
+
 
 int main()
 {
     glfwInit();
-    
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
@@ -54,6 +63,8 @@ int main()
 
     glfwSwapInterval(0);
 
+    //uint32_t result = load_model("../assets/MarcusAurelius/MarcusAurelius.obj");
+    std::thread thread(load_model, "../assets/MarcusAurelius/MarcusAurelius.obj");
 
     float vertices[] = 
     {
@@ -148,10 +159,8 @@ int main()
         if (key_map[GLFW_KEY_SPACE]) cam_pos.y += 1.0 * delta_time;
         if (key_map[GLFW_KEY_LEFT_SHIFT]) cam_pos.y -= 1.0 * delta_time;
 
-
         view = glm::lookAt(cam_pos, cam_pos + cam_dir, glm::vec3(0.0, 1.0, 0.0));
 
-        std::cout << "Theta: " << theta << " Phi: " << phi << std::endl;
 
         // Render
         glClear(GL_COLOR_BUFFER_BIT);
@@ -174,8 +183,57 @@ int main()
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(shader);
 
+    thread.join();
+
     glfwDestroyWindow(window);
     glfwTerminate();
+
+    return 0;
+}
+
+
+static void process_node(aiNode* node, const aiScene* scene)
+{
+    for(int i = 0; i < node->mNumMeshes; i++)
+    {
+        aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
+        std::cout << mesh << std::endl;
+
+        // Get the vertices
+        for(int j = 0; j < mesh->mNumVertices; j++)
+        {
+            //std::cout << mesh->mVertices[j].x << " " << mesh->mVertices[j].y << " " << mesh->mVertices[j].z << std::endl;
+        
+            //std::cout << mesh->mNormals[j].x << " " << mesh->mNormals[j].y << " " << mesh->mNormals[j].z << std::endl;
+        }
+
+        // Get the indices
+        // For each face get the indices in that face
+        for(int j = 0; j < mesh->mNumFaces; j++)
+        {
+            for(int k = 0; k < mesh->mFaces[j].mNumIndices; k++)
+            {
+                //std::cout << mesh->mFaces[j].mIndices[k] << std::endl;
+            }
+        }
+    }
+
+    for(int i = 0; i < node->mNumChildren; i++)
+    {
+        process_node(node->mChildren[i], scene);
+    }
+}
+
+static uint32_t load_model(const std::string& path)
+{
+
+    const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_JoinIdenticalVertices);
+    if(scene == nullptr)
+    {
+        return 0;
+    }
+
+    process_node(scene->mRootNode, scene);
 
     return 0;
 }
@@ -299,3 +357,37 @@ static std::string read_file_text(const std::string& path)
 
     return str;
 }
+
+/*
+
+class Scene
+{
+    // Maybe make this a map instead so we easily get objects
+    std::vector<Mesh&> m_meshes;
+    std::vector<Scene&> m_scenes;
+
+    void add(Mesh& m);
+    void add(Scene& s);
+    void remove(Mesh& m);
+    void remove(Scene& s);
+}
+
+int main()
+{
+
+    Renderer renderer;
+    Scene main_scene;
+
+    main_scene.add(meshes to add);
+
+    main_scene.remove(any mesh we want);
+
+    while(running)
+    {
+        renderer.render(scene);
+        renderer.render(other scene);
+        renderer.render(more stuff);
+    }
+}
+
+*/
