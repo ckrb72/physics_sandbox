@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 #include <fstream>
 #include <string>
+#include <map>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -11,6 +12,9 @@
 const uint32_t WIN_WIDTH = 1920;
 const uint32_t WIN_HEIGHT = 1080;
 
+std::map<int, int> key_map;
+
+static void keypress_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
 static void cursor_position_callback(GLFWwindow* window, double xpos, double ypos);
 static void window_resize_callback(GLFWwindow* window, int width, int height);
 static uint32_t compile_shader(const std::string& vertex, const std::string& fragment);
@@ -36,6 +40,7 @@ int main()
 
     glfwSetWindowSizeCallback(window, window_resize_callback);
     glfwSetCursorPosCallback(window, cursor_position_callback);
+    glfwSetKeyCallback(window, keypress_callback);
 
     glfwMakeContextCurrent(window);
 
@@ -106,12 +111,17 @@ int main()
 
     while(!glfwWindowShouldClose(window))
     {
+        // Update Time
         double current_time = glfwGetTime();
         delta_time = (current_time - previous_time);
         previous_time = current_time;
 
+        // Handle Events
         glfwPollEvents();
 
+        std::cout << key_map[GLFW_KEY_A] << std::endl;
+
+        // Update Cursor
         double xpos, ypos;
         glfwGetCursorPos(window, &xpos, &ypos);
 
@@ -122,8 +132,8 @@ int main()
 
         theta += cursor_dx * sensitivity;
         phi += cursor_dy * sensitivity;
-        if(phi >= 180.0) phi = 179.0;
-        if(phi <= -180.0) phi = 179.0;
+        if (phi >= 180.0) phi = 179.0;
+        if (phi <= -180.0) phi = 179.0;
 
         cam_dir.x = sin(glm::radians(-theta)) * cos(glm::radians(phi));
         cam_dir.z = cos(glm::radians(-theta)) * cos(glm::radians(phi));
@@ -131,6 +141,8 @@ int main()
 
         view = glm::lookAt(cam_pos, cam_pos + cam_dir, glm::vec3(0.0, 1.0, 0.0));
 
+
+        // Render
         glClear(GL_COLOR_BUFFER_BIT);
         glClearColor(0.3, 0.3, 0.3, 1.0);
 
@@ -155,6 +167,11 @@ int main()
     glfwTerminate();
 
     return 0;
+}
+
+static void keypress_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+    key_map[key] = (action == GLFW_PRESS);
 }
 
 static void cursor_position_callback(GLFWwindow* window, double xpos, double ypos)
