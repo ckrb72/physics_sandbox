@@ -1,0 +1,26 @@
+Name: Test
+
+# Here we load all the assets but don't actually place them in the scene
+# <> denotes a section that defines what assets to load. These assets can be referenced later on
+<Meshes>
+'Marcus Aurelius': path/to/marcus/aurelius/relative/to/this/file
+'Other Asset': path/to/other/asset/relative/to/this/file
+
+<Textures>
+'New Tex': path/to/new/tex/relative/to/this/file
+
+# Here we start placing things in the scene
+# [] denotes an actual object in the scene. The object type is contained in the []. i.e. [Light] or [Camera]
+[Light]
+id: 0
+color: {0.0, 0.0, 0.0}
+position: {1.0, 1.0, 1.0}
+
+[Camera]
+position: {0.0, 0.0, 0.0}
+direction: {0.0, 0.0, -1.0}
+
+
+[Object]
+mesh: 'Marcus Aurelius'
+position: {0.0, 0.0, 0.0}

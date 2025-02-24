@@ -15,6 +15,8 @@
 
 #include <thread>
 #include <mutex>
+#include <condition_variable>
+
 
 const uint32_t WIN_WIDTH = 1920;
 const uint32_t WIN_HEIGHT = 1080;
