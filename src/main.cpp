@@ -17,6 +17,9 @@
 #include <mutex>
 #include <condition_variable>
 
+#include <queue>
+#include "ThreadPool.h"
+
 
 const uint32_t WIN_WIDTH = 1920;
 const uint32_t WIN_HEIGHT = 1080;
@@ -124,6 +127,21 @@ int main()
     double theta = -180.0;
     double phi = 0.0;
 
+    std::vector<int> test_vec;
+    std::queue<std::function<void()>> queue;
+
+    
+    {
+        ThreadPool pool(1);
+
+        for(int i = 0; i < 10; i++)
+        {
+            pool.enqueue([=](){
+                std::cout << "Thread Job: " << i << std::endl;
+            });
+        }
+    }
+
     while(!glfwWindowShouldClose(window))
     {
         // Update Time
@@ -193,6 +211,23 @@ int main()
     return 0;
 }
 
+static void load_scene(const std::string& path)
+{
+    /*
+        Scene s{};
+
+        parse_scene_data...
+
+        return s;
+    */
+}
+
+static void save_scene(/*const Scene& s */ const std::string& path)
+{
+    /*
+        Save scene to disk
+    */
+}
 
 static void process_node(aiNode* node, const aiScene* scene)
 {
