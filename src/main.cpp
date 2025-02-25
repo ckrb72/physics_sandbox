@@ -26,6 +26,7 @@ const uint32_t WIN_HEIGHT = 1080;
 std::map<int, int> key_map;
 Assimp::Importer importer;
 
+static void load_scene(const std::string& path);
 static uint32_t load_model(const std::string& path);
 static void keypress_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
 static void cursor_position_callback(GLFWwindow* window, double xpos, double ypos);
@@ -35,6 +36,24 @@ static std::string read_file_text(const std::string& path);
 
 double previous_time = 0;
 bool cursor_locked = true;
+
+struct Vertex
+{
+    glm::vec3 position;
+    glm::vec3 normal;
+    //glm::vec4 color;
+    glm::vec2 tex_coords;
+};
+
+enum ParseState
+{
+    NONE,
+    MESH,
+    TEXTURE,
+    LIGHT,
+    CAMERA,
+    OBJECT
+};
 
 
 int main()
@@ -67,9 +86,6 @@ int main()
     }
 
     glfwSwapInterval(0);
-
-    //uint32_t result = load_model("../assets/MarcusAurelius/MarcusAurelius.obj");
-    std::thread thread(load_model, "../assets/MarcusAurelius/MarcusAurelius.obj");
 
     float vertices[] = 
     {
@@ -130,17 +146,19 @@ int main()
     std::vector<int> test_vec;
     std::queue<std::function<void()>> queue;
 
-    
-    {
-        ThreadPool pool(1);
+    /*ThreadPool pool(1);
 
-        for(int i = 0; i < 10; i++)
-        {
-            pool.enqueue([=](){
-                std::cout << "Thread Job: " << i << std::endl;
-            });
-        }
+    for(int i = 0; i < 10; i++)
+    {
+        pool.enqueue([=](){
+            std::cout << "Thread Job: " << i << std::endl;
+        });
     }
+
+    pool.enqueue([](){
+        load_model("../assets/MarcusAurelius/MarcusAurelius.obj");
+    });*/
+    
 
     while(!glfwWindowShouldClose(window))
     {
@@ -178,6 +196,7 @@ int main()
         if (key_map[GLFW_KEY_A]) cam_pos -= glm::normalize(glm::cross(cam_dir, glm::vec3(0.0, 1.0, 0.0))) * delta_time;
         if (key_map[GLFW_KEY_SPACE]) cam_pos.y += 1.0 * delta_time;
         if (key_map[GLFW_KEY_LEFT_SHIFT]) cam_pos.y -= 1.0 * delta_time;
+        if (key_map[GLFW_KEY_ESCAPE]) break;
 
         view = glm::lookAt(cam_pos, cam_pos + cam_dir, glm::vec3(0.0, 1.0, 0.0));
 
@@ -198,12 +217,14 @@ int main()
         glfwSwapBuffers(window);
     }
 
+    load_scene("../scenes/test.scene");
+
     glDeleteBuffers(1, &vertex_buffer);
     glDeleteBuffers(1, &index_buffer);
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(shader);
 
-    thread.join();
+    //thread.join();
 
     glfwDestroyWindow(window);
     glfwTerminate();
@@ -213,13 +234,64 @@ int main()
 
 static void load_scene(const std::string& path)
 {
-    /*
-        Scene s{};
 
-        parse_scene_data...
+    std::fstream file(path);
+    if(!file.is_open())
+    {
+        std::cerr << "SCENE PARSE: Failed to open file <path: " << path << ">" << std::endl;
+        return;
+    }
+   
+    std::string line;
+    ParseState state = NONE;
 
-        return s;
-    */
+    // Note: std::getline() strips the retrieved line of '\n' so no need to take it into account
+    while(std::getline(file, line))
+    {
+        // Don't care about empty lines
+        if (line.compare("") == 0) continue;
+        
+        // Get rid of white spaces
+        line.erase(std::remove_if(line.begin(), line.end(), isspace), line.end());
+
+        // In case I want to set everything to lowercase later on
+        //for(char& c : line) c =std::tolower(c);
+
+        // Don't care about comments
+        if (line[0] == '#') continue;
+
+        
+        // Set up state
+        if(line[0] == '<')
+        {
+            size_t start = line.find('<') + 1; // add 1 so we move past the starting delimiter
+            size_t end = line.find('>');
+            std::string substr = line.substr(start, end - start);
+
+            if (substr.compare("Meshes") == 0) state = ParseState::MESH;
+            if (substr.compare("Textures") == 0) state = ParseState::TEXTURE;
+
+            continue;
+        }
+
+        if(line[0] == '[')
+        {
+            size_t start = line.find('[') + 1; // add 1 so we move past the starting delimiter
+            size_t end = line.find(']');
+            std::string substr = line.substr(start, end - start);
+
+            if (substr.compare("Light") == 0) state = ParseState::LIGHT;
+            if (substr.compare("Camera") == 0) state = ParseState::CAMERA;
+            if (substr.compare("Object") == 0) state = ParseState::OBJECT;
+
+            continue;
+        }
+
+        // Continue parsing...
+
+        std::cout << line << " State: " << state << std::endl;
+    }
+
 }
 
 static void save_scene(/*const Scene& s */ const std::string& path)
@@ -234,25 +306,63 @@ static void process_node(aiNode* node, const aiScene* scene)
     for(int i = 0; i < node->mNumMeshes; i++)
     {
         aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
-        std::cout << mesh << std::endl;
+
+        std::vector<Vertex> vertices;
+        std::vector<unsigned int> indices;
+        
 
         // Get the vertices
         for(int j = 0; j < mesh->mNumVertices; j++)
         {
-            //std::cout << mesh->mVertices[j].x << " " << mesh->mVertices[j].y << " " << mesh->mVertices[j].z << std::endl;
-        
-            //std::cout << mesh->mNormals[j].x << " " << mesh->mNormals[j].y << " " << mesh->mNormals[j].z << std::endl;
+            Vertex v;
+
+            glm::vec3 temp;
+            temp.x = mesh->mVertices[j].x;
+            temp.y = mesh->mVertices[j].y;
+            temp.z = mesh->mVertices[j].z;
+
+            v.position = temp;
+
+            temp.x = mesh->mNormals[j].x;
+            temp.y = mesh->mNormals[j].y;
+            temp.z = mesh->mNormals[j].z;
+
+            v.normal = temp;
+
+            /*if(mesh->mColors[0])
+            {
+                glm::vec4 temp;
+                temp.x = mesh->mColors[0][j].r;
+                temp.y = mesh->mColors[0][j].g;
+                temp.z = mesh->mColors[0][j].b;
+                temp.w = mesh->mColors[0][j].a;
+            }*/
+
+            if(mesh->mTextureCoords[0])
+            {
+                glm::vec2 temp;
+                temp.x = mesh->mTextureCoords[0][j].x;
+                temp.y = mesh->mTextureCoords[0][j].y;
+                v.tex_coords = temp;
+            }
+
+
+            vertices.push_back(v);
         }
 
         // Get the indices
         // For each face get the indices in that face
         for(int j = 0; j < mesh->mNumFaces; j++)
         {
-            for(int k = 0; k < mesh->mFaces[j].mNumIndices; k++)
+            aiFace* face = &mesh->mFaces[j];
+            for(int k = 0; k <face->mNumIndices; k++)
             {
-                //std::cout << mesh->mFaces[j].mIndices[k] << std::endl;
+                indices.push_back(face->mIndices[k]);
             }
         }
+
+        std::cout << "Num Vertices: " << vertices.size() << " : " << mesh->mNumVertices << std::endl;
+        std::cout << "Num Indices: " << indices.size() << std::endl;
     }
 
     for(int i = 0; i < node->mNumChildren; i++)
@@ -263,10 +373,10 @@ static void process_node(aiNode* node, const aiScene* scene)
 
 static uint32_t load_model(const std::string& path)
 {
-
     const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_JoinIdenticalVertices);
     if(scene == nullptr)
     {
+        std::cerr << "Could Not Load Model: " << path << std::endl;
         return 0;
     }
 
