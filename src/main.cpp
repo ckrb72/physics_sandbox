@@ -20,14 +20,15 @@
 #include <queue>
 #include "ThreadPool.h"
 
+#include <stack>
+
 
 const uint32_t WIN_WIDTH = 1920;
 const uint32_t WIN_HEIGHT = 1080;
 std::map<int, int> key_map;
-Assimp::Importer importer;
 
 static void load_scene(const std::string& path);
-static uint32_t load_model(const std::string& path);
+static uint32_t load_model(Assimp::Importer& importer, const std::string& path);
 static void keypress_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
 static void cursor_position_callback(GLFWwindow* window, double xpos, double ypos);
 static void window_resize_callback(GLFWwindow* window, int width, int height);
@@ -146,18 +147,50 @@ int main()
     std::vector<int> test_vec;
     std::queue<std::function<void()>> queue;
 
-    /*ThreadPool pool(1);
+    std::mutex importer_mutex;
+    std::stack<Assimp::Importer*> importer_stack;
+    std::vector<Assimp::Importer> importers(2);
 
-    for(int i = 0; i < 10; i++)
+    importer_stack.push(&importers[0]);
+    importer_stack.push(&importers[1]);
+
+    ThreadPool pool(1);
+
+    /*for(int i = 0; i < 10; i++)
     {
         pool.enqueue([=](){
             std::cout << "Thread Job: " << i << std::endl;
         });
-    }
+    }*/
 
-    pool.enqueue([](){
-        load_model("../assets/MarcusAurelius/MarcusAurelius.obj");
-    });*/
+    pool.enqueue([&](){
+
+        std::unique_lock<std::mutex> lock(importer_mutex);
+        Assimp::Importer* importer = importer_stack.top();
+        importer_stack.pop();
+        lock.unlock();
+
+        load_model(*importer, "../assets/MarcusAurelius/MarcusAurelius.obj");
+
+        lock.lock();
+        importer_stack.push(importer);
+        lock.unlock();
+
+        std::cout << "Finished this job" << std::endl;
+    });
+
+    pool.enqueue([&](){
+        std::unique_lock<std::mutex> lock(importer_mutex);
+        Assimp::Importer* importer = importer_stack.top();
+        importer_stack.pop();
+        lock.unlock();
+
+        load_model(*importer, "../assets/MarcusAurelius/MarcusAurelius.obj");
+
+        lock.lock();
+        importer_stack.push(importer);
+        lock.unlock();
+    });
     
 
     while(!glfwWindowShouldClose(window))
@@ -217,7 +250,7 @@ int main()
         glfwSwapBuffers(window);
     }
 
-    load_scene("../scenes/test.scene");
+    //load_scene("../scenes/test.scene");
 
     glDeleteBuffers(1, &vertex_buffer);
     glDeleteBuffers(1, &index_buffer);
@@ -269,7 +302,12 @@ static void load_scene(const std::string& path)
             std::string substr = line.substr(start, end - start);
 
             if (substr.compare("Meshes") == 0) state = ParseState::MESH;
-            if (substr.compare("Textures") == 0) state = ParseState::TEXTURE;
+            else if (substr.compare("Textures") == 0) state = ParseState::TEXTURE;
+            else
+            {
+                std::cerr << "SCENE PARSE: Section <" << substr << "> not valid" << std::endl;
+                return;
+            }
 
             continue;
         }
@@ -281,15 +319,19 @@ static void load_scene(const std::string& path)
             std::string substr = line.substr(start, end - start);
 
             if (substr.compare("Light") == 0) state = ParseState::LIGHT;
-            if (substr.compare("Camera") == 0) state = ParseState::CAMERA;
-            if (substr.compare("Object") == 0) state = ParseState::OBJECT;
-
+            else if (substr.compare("Camera") == 0) state = ParseState::CAMERA;
+            else if (substr.compare("Object") == 0) state = ParseState::OBJECT;
+            else
+            {
+                std::cerr << "SCENE PARSE: Object type [" << substr << "] not valid" << std::endl;
+                return;
+            }
             continue;
         }
 
         // Continue parsing...
 
-        std::cout << line << " State: " << state << std::endl;
+        std::cout << line << std::endl;
     }
 
 }
@@ -371,7 +413,7 @@ static void process_node(aiNode* node, const aiScene* scene)
     }
 }
 
-static uint32_t load_model(const std::string& path)
+static uint32_t load_model(Assimp::Importer& importer, const std::string& path)
 {
     const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_JoinIdenticalVertices);
     if(scene == nullptr)

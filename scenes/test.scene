@@ -16,10 +16,10 @@ id: 0
 color: {0.0, 0.0, 0.0}
 position: {1.0, 1.0, 1.0}
 
+# Maybe we shouldn't include cameras in the scene
 [Camera]
 position: {0.0, 0.0, 0.0}
 direction: {0.0, 0.0, -1.0}
-
 
 [Object]
 mesh: 'Marcus Aurelius'
