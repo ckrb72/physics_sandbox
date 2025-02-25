@@ -13,10 +13,6 @@
 #include <assimp/scene.h>           // Output data structure
 #include <assimp/postprocess.h>     // Post processing flags
 
-#include <thread>
-#include <mutex>
-#include <condition_variable>
-
 #include <queue>
 #include "ThreadPool.h"
 
@@ -30,7 +26,6 @@ std::map<int, int> key_map;
 static void load_scene(const std::string& path);
 static uint32_t load_model(Assimp::Importer& importer, const std::string& path);
 static void keypress_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
-static void cursor_position_callback(GLFWwindow* window, double xpos, double ypos);
 static void window_resize_callback(GLFWwindow* window, int width, int height);
 static uint32_t compile_shader(const std::string& vertex, const std::string& fragment);
 static std::string read_file_text(const std::string& path);
@@ -73,7 +68,6 @@ int main()
     }
 
     glfwSetWindowSizeCallback(window, window_resize_callback);
-    glfwSetCursorPosCallback(window, cursor_position_callback);
     glfwSetKeyCallback(window, keypress_callback);
 
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -82,23 +76,56 @@ int main()
 
     if(!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     {
-        std::cerr << "Failed to load graphics functions" << std::endl;
+        std::cerr << "RENDER INIT: Failed to load graphics functions" << std::endl;
         return -1;
     }
 
     glfwSwapInterval(0);
 
-    float vertices[] = 
+    /*glm::vec3 vertices[] = 
     {
-        -0.5, -0.5, 0.0,
-        0.5, -0.5, 0.0,
-        0.5, 0.5, 0.0,
-        -0.5, 0.5, 0.0
+        {-0.5, -0.5, 0.5},
+        {0.5, -0.5, 0.5},
+        {0.5, 0.5, 0.5},
+        {-0.5, 0.5, 0.5},
+
+        {-0.5, -0.5, -0.5},
+        {0.5, -0.5, -0.5},
+        {0.5, 0.5, -0.5},
+        {-0.5, 0.5, -0.5}
+    };*/
+
+    std::vector<glm::vec3> vertices = 
+    {
+        {-0.5, -0.5, 0.5},
+        {0.5, -0.5, 0.5},
+        {0.5, 0.5, 0.5},
+        {-0.5, 0.5, 0.5},
+
+        {-0.5, -0.5, -0.5},
+        {0.5, -0.5, -0.5},
+        {0.5, 0.5, -0.5},
+        {-0.5, 0.5, -0.5}
     };
 
     unsigned int indices[] = {
         0, 1, 2,
-        2, 3, 0
+        2, 3, 0,
+
+        5, 4, 7,
+        7, 6, 5,
+
+        3, 2, 6,
+        6, 7, 3,
+
+        1, 0, 4,
+        4, 5, 1,
+
+        4, 0, 3,
+        3, 7, 4,
+
+        1, 5, 6,
+        6, 2, 1
     };
 
     uint32_t vertex_buffer, index_buffer, vao;
@@ -110,7 +137,7 @@ int main()
     glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, index_buffer);
 
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(glm::vec3), vertices.data(), GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
@@ -144,24 +171,16 @@ int main()
     double theta = -180.0;
     double phi = 0.0;
 
-    std::vector<int> test_vec;
-    std::queue<std::function<void()>> queue;
-
     std::mutex importer_mutex;
     std::stack<Assimp::Importer*> importer_stack;
-    std::vector<Assimp::Importer> importers(2);
+    std::vector<Assimp::Importer> importers(4);
 
-    importer_stack.push(&importers[0]);
-    importer_stack.push(&importers[1]);
-
-    ThreadPool pool(1);
-
-    /*for(int i = 0; i < 10; i++)
+    for(Assimp::Importer& importer : importers)
     {
-        pool.enqueue([=](){
-            std::cout << "Thread Job: " << i << std::endl;
-        });
-    }*/
+        importer_stack.push(&importer);
+    }
+
+    ThreadPool pool(4);
 
     pool.enqueue([&](){
 
@@ -179,6 +198,18 @@ int main()
         std::cout << "Finished this job" << std::endl;
     });
 
+    /*pool.enqueue([&](){
+        std::unique_lock<std::mutex> lock(importer_mutex);
+        Assimp::Importer* importer = importer_stack.top();
+        importer_stack.pop();
+        lock.unlock();
+
+        load_model(*importer, "../assets/MarcusAurelius/MarcusAurelius.obj");
+
+        lock.lock();
+        importer_stack.push(importer);
+        lock.unlock();
+    });
     pool.enqueue([&](){
         std::unique_lock<std::mutex> lock(importer_mutex);
         Assimp::Importer* importer = importer_stack.top();
@@ -191,7 +222,21 @@ int main()
         importer_stack.push(importer);
         lock.unlock();
     });
+    pool.enqueue([&](){
+        std::unique_lock<std::mutex> lock(importer_mutex);
+        Assimp::Importer* importer = importer_stack.top();
+        importer_stack.pop();
+        lock.unlock();
+
+        load_model(*importer, "../assets/MarcusAurelius/MarcusAurelius.obj");
+
+        lock.lock();
+        importer_stack.push(importer);
+        lock.unlock();
+    });*/
     
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
 
     while(!glfwWindowShouldClose(window))
     {
@@ -235,7 +280,7 @@ int main()
 
 
         // Render
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glClearColor(0.3, 0.3, 0.3, 1.0);
 
         glUseProgram(shader);
@@ -250,19 +295,33 @@ int main()
         glfwSwapBuffers(window);
     }
 
-    //load_scene("../scenes/test.scene");
+    load_scene("../scenes/test.scene");
 
     glDeleteBuffers(1, &vertex_buffer);
     glDeleteBuffers(1, &index_buffer);
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(shader);
 
-    //thread.join();
-
     glfwDestroyWindow(window);
     glfwTerminate();
 
     return 0;
+}
+
+static void calculate_aabb(std::vector<glm::vec3>& vertices)
+{
+    glm::vec3 min = vertices[0];
+    glm::vec3 max = vertices[0];
+    for(glm::vec3& pos : vertices)
+    {
+        if (pos.x < min.x) min.x = pos.x;
+        if (pos.y < min.y) min.y = pos.y;
+        if (pos.z < min.z) min.z = pos.z;
+
+        if (pos.x > max.x) max.x = pos.x;
+        if (pos.y > max.y) max.y = pos.y;
+        if (pos.z > max.z) max.z = pos.z;
+    }
 }
 
 static void load_scene(const std::string& path)
@@ -331,8 +390,41 @@ static void load_scene(const std::string& path)
 
         // Continue parsing...
 
-        std::cout << line << std::endl;
+        switch(state)
+        {
+            case ParseState::NONE:
+            continue;
+            break;
+
+            case ParseState::MESH:
+
+            break;
+
+            case ParseState::TEXTURE:
+
+            break;
+
+            case ParseState::LIGHT:
+
+            break;
+
+            case ParseState::CAMERA:
+
+            break;
+
+            case ParseState::OBJECT:
+
+            break;
+
+            default: 
+            continue;
+            break; 
+        }
+
+        //std::cout << line << std::endl;
     }
+
+    file.close();
 
 }
 
@@ -403,6 +495,11 @@ static void process_node(aiNode* node, const aiScene* scene)
             }
         }
 
+        if(mesh->mMaterialIndex >= 0)
+        {
+            std::cout << "Found a material" << std::endl;
+        }
+
         std::cout << "Num Vertices: " << vertices.size() << " : " << mesh->mNumVertices << std::endl;
         std::cout << "Num Indices: " << indices.size() << std::endl;
     }
@@ -437,11 +534,6 @@ static void keypress_callback(GLFWwindow* window, int key, int scancode, int act
     {
         key_map[key] = 0;
     }
-}
-
-static void cursor_position_callback(GLFWwindow* window, double xpos, double ypos)
-{
-    //std::cout << "X: " << xpos << "Y: " << ypos << std::endl;
 }
 
 static void window_resize_callback(GLFWwindow* window, int width, int height)
@@ -573,9 +665,9 @@ int main()
 
     while(running)
     {
-        renderer.render(scene);
-        renderer.render(other scene);
-        renderer.render(more stuff);
+        renderer.render(scene, camera);
+        renderer.render(other scene, camera);
+        renderer.render(more stuff, camera2);
     }
 }
 

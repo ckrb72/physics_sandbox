@@ -22,5 +22,6 @@ position: {0.0, 0.0, 0.0}
 direction: {0.0, 0.0, -1.0}
 
 [Object]
+# Maybe want to add a syntax that allows us to add components to objects later on
 mesh: 'Marcus Aurelius'
 position: {0.0, 0.0, 0.0}
