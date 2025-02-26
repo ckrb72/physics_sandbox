@@ -18,6 +18,9 @@
 
 #include <stack>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+
 double cam_radius = 5.0;
 struct Vertex
 {
@@ -29,7 +32,8 @@ struct Vertex
 
 struct Texture
 {
-    uint32_t id;
+    uint32_t width, height, channels;
+    uint32_t id = UINT32_MAX;
     std::string path;
 };
 
@@ -51,6 +55,7 @@ std::map<int, int> key_map;
 static void draw_model(Model& m);
 static void load_model_gpu(Model& m);
 static void load_scene(const std::string& path);
+static Texture load_texture(const std::string& path);
 static Model load_model(Assimp::Importer& importer, const std::string& path);
 static void keypress_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
 static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
@@ -225,6 +230,7 @@ int main()
     glm::vec3 cam_pos = glm::vec3(0.0, 0.0, cam_radius);
     glm::mat4 view = glm::lookAt(cam_pos, glm::vec3(0.0, 0.0, 0.0), glm::vec3(0.0, 1.0, 0.0));
 
+    double angle = 0.0;
 
     while(!glfwWindowShouldClose(window))
     {
@@ -306,6 +312,9 @@ int main()
         glDrawElements(GL_TRIANGLES, sizeof(indices) / sizeof(unsigned int), GL_UNSIGNED_INT, NULL);
 
         glm::mat4 model2(1.0);
+        model2 = glm::rotate(model2, (float)glm::radians(angle), glm::vec3(0.0, 1.0, 0.0));
+
+        angle += 10.0 * delta_time;
 
         glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(model2));
         if (model_loaded) draw_model(loaded_model);
@@ -340,6 +349,45 @@ static void draw_model(Model& m)
     {
         draw_model(m);
     }
+}
+
+
+static Texture load_texture(const std::string& path)
+{
+    int width, height, channels;
+    unsigned char* data = stbi_load(path.c_str(), &width, &height, &channels, 0);
+    if(!data)
+    {
+        std::cerr << "LOAD TEXTURE: failed to load texture <path: " << path << ">" << std::endl;
+        return Texture();
+    }
+
+    uint32_t id;
+    glGenTextures(1, &id);
+    glBindTexture(GL_TEXTURE_2D, id);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);	
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    
+    uint32_t format;
+    if (channels == 3) format = GL_RGB;
+    else format = GL_RGBA;
+    
+    glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    stbi_image_free(data);
+
+    Texture tex{};
+    tex.width = width;
+    tex.height = height;
+    tex.channels = channels;
+    tex.id = id;
+    tex.path = path;
+
+    return tex;
 }
 
 static void load_model_gpu(Model& m)
