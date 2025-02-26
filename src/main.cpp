@@ -18,7 +18,7 @@
 
 #include <stack>
 
-
+double cam_radius = 5.0;
 struct Vertex
 {
     glm::vec3 position;
@@ -27,12 +27,21 @@ struct Vertex
     glm::vec2 tex_coords;
 };
 
+struct Texture
+{
+    uint32_t id;
+    std::string path;
+};
+
+// Note if it's laid out like this a model is essentially a collection of other models itself...
+// This allows you to do cool things like wrap a collection of models in a model itself and then just do a draw_model call on that one model 
+// to draw all of the models in that collection
 struct Model
 {
     std::vector<Vertex> vertices;   // Can probably throw this stuff out once we are done with it?
     std::vector<unsigned int> indices;  // Can probably throw this out once we are done with it?
     std::vector<Model> children;
-    uint32_t vert_arr, vert_buf, indx_buf;
+    uint32_t vert_arr = UINT32_MAX, vert_buf = UINT32_MAX, indx_buf = UINT32_MAX;
 };
 
 const uint32_t WIN_WIDTH = 1920;
@@ -44,6 +53,7 @@ static void load_model_gpu(Model& m);
 static void load_scene(const std::string& path);
 static Model load_model(Assimp::Importer& importer, const std::string& path);
 static void keypress_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
+static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
 static void window_resize_callback(GLFWwindow* window, int width, int height);
 static uint32_t compile_shader(const std::string& vertex, const std::string& fragment);
 static std::string read_file_text(const std::string& path);
@@ -82,8 +92,8 @@ int main()
 
     glfwSetWindowSizeCallback(window, window_resize_callback);
     glfwSetKeyCallback(window, keypress_callback);
-
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    glfwSetScrollCallback(window, scroll_callback);
 
     glfwMakeContextCurrent(window);
 
@@ -94,19 +104,6 @@ int main()
     }
 
     glfwSwapInterval(0);
-
-    /*glm::vec3 vertices[] = 
-    {
-        {-0.5, -0.5, 0.5},
-        {0.5, -0.5, 0.5},
-        {0.5, 0.5, 0.5},
-        {-0.5, 0.5, 0.5},
-
-        {-0.5, -0.5, -0.5},
-        {0.5, -0.5, -0.5},
-        {0.5, 0.5, -0.5},
-        {-0.5, 0.5, -0.5}
-    };*/
 
     std::vector<glm::vec3> vertices = 
     {
@@ -167,22 +164,14 @@ int main()
 
     glm::mat4 projection = glm::perspective(glm::radians(45.0), (double)WIN_WIDTH / (double)WIN_HEIGHT, 0.1, 100.0);
     glm::mat4 model = glm::mat4(1.0);
-    model = glm::rotate(model, glm::radians(45.0f), glm::vec3(0.0, 1.0, 0.0));
-
-    glm::vec3 cam_pos = glm::vec3(0.0, 0.0, 5.0);
-    glm::vec3 cam_dir = glm::vec3(0.0, 0.0, -1.0);
-    glm::mat4 view = glm::lookAt(cam_pos, cam_pos + cam_dir, glm::vec3(0.0, 1.0, 0.0));
-
+    model = glm::scale(model, glm::vec3(0.5));
+    model = glm::translate(model, glm::vec3(2.0, 0.0, 0.0));
     previous_time = glfwGetTime();
 
     float delta_time = 0.0;
 
     double xpos_prev, ypos_prev;
     glfwGetCursorPos(window, &xpos_prev, &ypos_prev);
-
-    double sensitivity = 0.1;
-    double theta = -180.0;
-    double phi = 0.0;
 
     std::mutex importer_mutex;
     std::stack<Assimp::Importer*> importer_stack;
@@ -206,10 +195,6 @@ int main()
         // a pointer to it as an argument so there is no need to copy it again
         Model model = load_model(*importer, "../assets/MarcusAurelius/MarcusAurelius.obj");
 
-        std::cout << "In original function: " << model.children[0].vertices.size() << std::endl;
-        std::cout << "In original function: " << model.children[0].indices.size() << std::endl;
-        std::cout << "Children size: " << model.children.size() << std::endl;
-
         lock.lock();
         importer_stack.push(importer);
         lock.unlock();
@@ -217,46 +202,7 @@ int main()
         std::unique_lock<std::mutex> model_lock(model_mutex);
         models_to_process.push(model);
         model_lock.unlock();
-
-        std::cout << "Finished this job" << std::endl;
     });
-
-    /*pool.enqueue([&](){
-        std::unique_lock<std::mutex> lock(importer_mutex);
-        Assimp::Importer* importer = importer_stack.top();
-        importer_stack.pop();
-        lock.unlock();
-
-        load_model(*importer, "../assets/MarcusAurelius/MarcusAurelius.obj");
-
-        lock.lock();
-        importer_stack.push(importer);
-        lock.unlock();
-    });
-    pool.enqueue([&](){
-        std::unique_lock<std::mutex> lock(importer_mutex);
-        Assimp::Importer* importer = importer_stack.top();
-        importer_stack.pop();
-        lock.unlock();
-
-        load_model(*importer, "../assets/MarcusAurelius/MarcusAurelius.obj");
-
-        lock.lock();
-        importer_stack.push(importer);
-        lock.unlock();
-    });
-    pool.enqueue([&](){
-        std::unique_lock<std::mutex> lock(importer_mutex);
-        Assimp::Importer* importer = importer_stack.top();
-        importer_stack.pop();
-        lock.unlock();
-
-        load_model(*importer, "../assets/MarcusAurelius/MarcusAurelius.obj");
-
-        lock.lock();
-        importer_stack.push(importer);
-        lock.unlock();
-    });*/
     
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
@@ -264,6 +210,21 @@ int main()
     bool model_loaded = false;
 
     Model loaded_model{};
+
+    // Camera Parameters
+    double sensitivity = 0.1;
+    //double theta = -180.0;    For FPS Camera
+    double theta = 0.0;
+    double phi = 0.0;
+
+    // For FPS Camera
+    //glm::vec3 cam_pos = glm::vec3(0.0, 0.0, 5.0);
+    //glm::vec3 cam_dir = glm::vec3(0.0, 0.0, -1.0);
+    //glm::mat4 view = glm::lookAt(cam_pos, cam_pos + cam_dir, glm::vec3(0.0, 1.0, 0.0));
+
+    glm::vec3 cam_pos = glm::vec3(0.0, 0.0, cam_radius);
+    glm::mat4 view = glm::lookAt(cam_pos, glm::vec3(0.0, 0.0, 0.0), glm::vec3(0.0, 1.0, 0.0));
+
 
     while(!glfwWindowShouldClose(window))
     {
@@ -305,7 +266,8 @@ int main()
         if (phi >= 89.0) phi = 89.0;
         if (phi <= -89.0) phi = -89.0;
 
-        cam_dir.x = sin(glm::radians(-theta)) * cos(glm::radians(phi));
+        // FPS Camera
+        /*cam_dir.x = sin(glm::radians(-theta)) * cos(glm::radians(phi));
         cam_dir.z = cos(glm::radians(-theta)) * cos(glm::radians(phi));
         cam_dir.y = -sin(glm::radians(phi));
 
@@ -318,8 +280,17 @@ int main()
         if (key_map[GLFW_KEY_LEFT_SHIFT]) cam_pos.y -= 1.0 * delta_time;
         if (key_map[GLFW_KEY_ESCAPE]) break;
 
-        view = glm::lookAt(cam_pos, cam_pos + cam_dir, glm::vec3(0.0, 1.0, 0.0));
+        view = glm::lookAt(cam_pos, cam_pos + cam_dir, glm::vec3(0.0, 1.0, 0.0));*/
 
+        // Orbit Camera
+
+        cam_pos.x = cam_radius * sin(glm::radians(-theta)) * cos(glm::radians(phi));
+        cam_pos.y = cam_radius * sin(glm::radians(phi));
+        cam_pos.z = cam_radius * cos(glm::radians(-theta)) * cos(glm::radians(phi));
+
+        if (key_map[GLFW_KEY_ESCAPE]) break;
+
+        view = glm::lookAt(cam_pos, glm::vec3(0.0, 0.0, 0.0), glm::vec3(0.0, 1.0, 0.0));
 
         // Render
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -331,9 +302,12 @@ int main()
         glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(model));
 
 
-        //glBindVertexArray(vao);
-        //glDrawElements(GL_TRIANGLES, sizeof(indices) / sizeof(unsigned int), GL_UNSIGNED_INT, NULL);
+        glBindVertexArray(vao);
+        glDrawElements(GL_TRIANGLES, sizeof(indices) / sizeof(unsigned int), GL_UNSIGNED_INT, NULL);
 
+        glm::mat4 model2(1.0);
+
+        glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(model2));
         if (model_loaded) draw_model(loaded_model);
 
         glfwSwapBuffers(window);
@@ -356,8 +330,11 @@ int main()
 // this first prototype
 static void draw_model(Model& m)
 {
-    glBindVertexArray(m.vert_arr);
-    glDrawElements(GL_TRIANGLES, m.indices.size(), GL_UNSIGNED_INT, NULL);
+    if(m.vert_arr != UINT32_MAX)
+    {
+        glBindVertexArray(m.vert_arr);
+        glDrawElements(GL_TRIANGLES, m.indices.size(), GL_UNSIGNED_INT, NULL);
+    }
 
     for(Model& m : m.children)
     {
@@ -529,7 +506,6 @@ static void load_scene(const std::string& path)
     }
 
     file.close();
-
 }
 
 static void save_scene(/*const Scene& s */ const std::string& path)
@@ -600,9 +576,6 @@ static void process_node(Model& model, aiNode* node, const aiScene* scene)
         {
             std::cout << "Found a material" << std::endl;
         }
-
-        std::cout << "Num Vertices: " << model.vertices.size() << " : " << mesh->mNumVertices << std::endl;
-        std::cout << "Num Indices: " << model.indices.size() << std::endl;
     }
 
     for(int i = 0; i < node->mNumChildren; i++)
@@ -631,6 +604,11 @@ static Model load_model(Assimp::Importer& importer, const std::string& path)
     process_node(model, scene->mRootNode, scene);
 
     return model;
+}
+
+static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
+{
+    cam_radius -= 0.2 * yoffset;
 }
 
 static void keypress_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
