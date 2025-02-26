@@ -19,12 +19,30 @@
 #include <stack>
 
 
+struct Vertex
+{
+    glm::vec3 position;
+    glm::vec3 normal;
+    //glm::vec4 color;
+    glm::vec2 tex_coords;
+};
+
+struct Model
+{
+    std::vector<Vertex> vertices;   // Can probably throw this stuff out once we are done with it?
+    std::vector<unsigned int> indices;  // Can probably throw this out once we are done with it?
+    std::vector<Model> children;
+    uint32_t vert_arr, vert_buf, indx_buf;
+};
+
 const uint32_t WIN_WIDTH = 1920;
 const uint32_t WIN_HEIGHT = 1080;
 std::map<int, int> key_map;
 
+static void draw_model(Model& m);
+static void load_model_gpu(Model& m);
 static void load_scene(const std::string& path);
-static uint32_t load_model(Assimp::Importer& importer, const std::string& path);
+static Model load_model(Assimp::Importer& importer, const std::string& path);
 static void keypress_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
 static void window_resize_callback(GLFWwindow* window, int width, int height);
 static uint32_t compile_shader(const std::string& vertex, const std::string& fragment);
@@ -33,13 +51,8 @@ static std::string read_file_text(const std::string& path);
 double previous_time = 0;
 bool cursor_locked = true;
 
-struct Vertex
-{
-    glm::vec3 position;
-    glm::vec3 normal;
-    //glm::vec4 color;
-    glm::vec2 tex_coords;
-};
+std::mutex model_mutex;
+std::queue<Model> models_to_process;
 
 enum ParseState
 {
@@ -189,11 +202,21 @@ int main()
         importer_stack.pop();
         lock.unlock();
 
-        load_model(*importer, "../assets/MarcusAurelius/MarcusAurelius.obj");
+        // Probably don't want to do all this copying so maybe generate a mesh here and then pass
+        // a pointer to it as an argument so there is no need to copy it again
+        Model model = load_model(*importer, "../assets/MarcusAurelius/MarcusAurelius.obj");
+
+        std::cout << "In original function: " << model.children[0].vertices.size() << std::endl;
+        std::cout << "In original function: " << model.children[0].indices.size() << std::endl;
+        std::cout << "Children size: " << model.children.size() << std::endl;
 
         lock.lock();
         importer_stack.push(importer);
         lock.unlock();
+
+        std::unique_lock<std::mutex> model_lock(model_mutex);
+        models_to_process.push(model);
+        model_lock.unlock();
 
         std::cout << "Finished this job" << std::endl;
     });
@@ -238,8 +261,27 @@ int main()
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
 
+    bool model_loaded = false;
+
+    Model loaded_model{};
+
     while(!glfwWindowShouldClose(window))
     {
+
+        if(models_to_process.size() > 0 && model_loaded == false)
+        {
+            std::cout << "Models loaded: " << models_to_process.size() << std::endl;
+            model_loaded = true;
+
+            std::unique_lock<std::mutex> lock(model_mutex);
+            Model m = models_to_process.front();
+            models_to_process.pop();
+            lock.unlock();
+            
+            load_model_gpu(m);
+            loaded_model = m;
+        }
+        
         // Update Time
         double current_time = glfwGetTime();
         delta_time = (current_time - previous_time);
@@ -260,8 +302,8 @@ int main()
         // Update Camera
         theta += cursor_dx * sensitivity;
         phi += cursor_dy * sensitivity;
-        if (phi >= 180.0) phi = 179.0;
-        if (phi <= -180.0) phi = 179.0;
+        if (phi >= 89.0) phi = 89.0;
+        if (phi <= -89.0) phi = -89.0;
 
         cam_dir.x = sin(glm::radians(-theta)) * cos(glm::radians(phi));
         cam_dir.z = cos(glm::radians(-theta)) * cos(glm::radians(phi));
@@ -289,8 +331,10 @@ int main()
         glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(model));
 
 
-        glBindVertexArray(vao);
-        glDrawElements(GL_TRIANGLES, sizeof(indices) / sizeof(unsigned int), GL_UNSIGNED_INT, NULL);
+        //glBindVertexArray(vao);
+        //glDrawElements(GL_TRIANGLES, sizeof(indices) / sizeof(unsigned int), GL_UNSIGNED_INT, NULL);
+
+        if (model_loaded) draw_model(loaded_model);
 
         glfwSwapBuffers(window);
     }
@@ -306,6 +350,66 @@ int main()
     glfwTerminate();
 
     return 0;
+}
+
+// TODO: Will definitely have to change this up to bind the uniforms it needs but is fine for
+// this first prototype
+static void draw_model(Model& m)
+{
+    glBindVertexArray(m.vert_arr);
+    glDrawElements(GL_TRIANGLES, m.indices.size(), GL_UNSIGNED_INT, NULL);
+
+    for(Model& m : m.children)
+    {
+        draw_model(m);
+    }
+}
+
+static void load_model_gpu(Model& m)
+{
+    uint32_t vert_arr, vert_buf, indx_buf;
+
+    // Only generate buffers if current Model actually has data
+    // (sometimes assimp loads a node that doesn't have any data [usually the root node])
+    if (m.vertices.size() > 0)
+    {
+        glGenVertexArrays(1, &vert_arr);
+        glGenBuffers(1, &vert_buf);
+        glGenBuffers(1, &indx_buf);
+    
+        glBindVertexArray(vert_arr);
+        glBindBuffer(GL_ARRAY_BUFFER, vert_buf);
+        glBufferData(GL_ARRAY_BUFFER, m.vertices.size() * sizeof(Vertex), m.vertices.data(), GL_STATIC_DRAW);
+    
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, position));
+        glEnableVertexAttribArray(0);
+    
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, normal));
+        glEnableVertexAttribArray(1);
+    
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, tex_coords));
+        glEnableVertexAttribArray(2);
+    
+        /*
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, color));
+        glEnableVertexAttribArray(3);
+        */
+    
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indx_buf);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, m.indices.size() * sizeof(unsigned int), m.indices.data(), GL_STATIC_DRAW);
+        glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+        m.vert_arr = vert_arr;
+        m.vert_buf = vert_buf;
+        m.indx_buf = indx_buf;
+    }
+
+    for(Model& m : m.children)
+    {
+        load_model_gpu(m);
+    }
 }
 
 static void calculate_aabb(std::vector<glm::vec3>& vertices)
@@ -435,14 +539,11 @@ static void save_scene(/*const Scene& s */ const std::string& path)
     */
 }
 
-static void process_node(aiNode* node, const aiScene* scene)
+static void process_node(Model& model, aiNode* node, const aiScene* scene)
 {
     for(int i = 0; i < node->mNumMeshes; i++)
     {
         aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
-
-        std::vector<Vertex> vertices;
-        std::vector<unsigned int> indices;
         
 
         // Get the vertices
@@ -481,7 +582,7 @@ static void process_node(aiNode* node, const aiScene* scene)
             }
 
 
-            vertices.push_back(v);
+            model.vertices.push_back(v);
         }
 
         // Get the indices
@@ -491,7 +592,7 @@ static void process_node(aiNode* node, const aiScene* scene)
             aiFace* face = &mesh->mFaces[j];
             for(int k = 0; k <face->mNumIndices; k++)
             {
-                indices.push_back(face->mIndices[k]);
+                model.indices.push_back(face->mIndices[k]);
             }
         }
 
@@ -500,28 +601,36 @@ static void process_node(aiNode* node, const aiScene* scene)
             std::cout << "Found a material" << std::endl;
         }
 
-        std::cout << "Num Vertices: " << vertices.size() << " : " << mesh->mNumVertices << std::endl;
-        std::cout << "Num Indices: " << indices.size() << std::endl;
+        std::cout << "Num Vertices: " << model.vertices.size() << " : " << mesh->mNumVertices << std::endl;
+        std::cout << "Num Indices: " << model.indices.size() << std::endl;
     }
 
     for(int i = 0; i < node->mNumChildren; i++)
     {
-        process_node(node->mChildren[i], scene);
+        // Create new model
+        Model child_model{};
+
+        process_node(child_model, node->mChildren[i], scene);
+
+        // Then push back the child_model as a child of the original model
+        model.children.push_back(child_model);
     }
 }
 
-static uint32_t load_model(Assimp::Importer& importer, const std::string& path)
+static Model load_model(Assimp::Importer& importer, const std::string& path)
 {
     const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_JoinIdenticalVertices);
     if(scene == nullptr)
     {
         std::cerr << "Could Not Load Model: " << path << std::endl;
-        return 0;
+        return Model();
     }
 
-    process_node(scene->mRootNode, scene);
+    Model model{};
 
-    return 0;
+    process_node(model, scene->mRootNode, scene);
+
+    return model;
 }
 
 static void keypress_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
