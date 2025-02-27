@@ -37,6 +37,13 @@ struct Texture
     std::string path;
 };
 
+struct MeshGeometry
+{
+    uint32_t vert_arr = UINT32_MAX, vert_buf = UINT32_MAX, indx_buf = UINT32_MAX;
+    std::vector<Vertex> vertices;
+    std::vector<unsigned int> indices;
+};
+
 // Note if it's laid out like this a model is essentially a collection of other models itself...
 // This allows you to do cool things like wrap a collection of models in a model itself and then just do a draw_model call on that one model 
 // to draw all of the models in that collection
@@ -166,6 +173,7 @@ int main()
     uint32_t model_loc = glGetUniformLocation(shader, "model");
     uint32_t view_loc = glGetUniformLocation(shader, "view");
     uint32_t projection_loc = glGetUniformLocation(shader, "projection");
+    uint32_t transpose_inverse_model_loc = glGetUniformLocation(shader, "transpose_inverse_model");
 
     glm::mat4 projection = glm::perspective(glm::radians(45.0), (double)WIN_WIDTH / (double)WIN_HEIGHT, 0.1, 100.0);
     glm::mat4 model = glm::mat4(1.0);
@@ -182,6 +190,14 @@ int main()
     std::stack<Assimp::Importer*> importer_stack;
     std::vector<Assimp::Importer> importers(4);
 
+    // Pushing references to all the importers so our threads can use and reuse them while also having a unique importer per thread.
+    // Since each importer can only be used by one thread at a time we set it up like this. If a thread wants an importer then it can simply
+    // pop one of the references off the stack, use it, and then push it back on the stack once it's done. In that way the threads don't need
+    // to worry about using a different thread's importer.
+    // If there are the same amount of importers in the stack as there are threads in the pool then we pretty much guarantee that an importer will
+    // be available if a thread needs one. What's even better is that at thread doesn't care what specific importer it uses so we don't need to care
+    // about enforcing a specific importer to a specific thread which would require us to somehow enumerate the threads. Setting it up like this
+    // gives us the ability to always get an importer for a thread in O(1) time and we don't need to loop through an array of importers and see which ones are being used or anything.
     for(Assimp::Importer& importer : importers)
     {
         importer_stack.push(&importer);
@@ -191,6 +207,7 @@ int main()
 
     pool.enqueue([&](){
 
+        // get an importer to use
         std::unique_lock<std::mutex> lock(importer_mutex);
         Assimp::Importer* importer = importer_stack.top();
         importer_stack.pop();
@@ -200,6 +217,7 @@ int main()
         // a pointer to it as an argument so there is no need to copy it again
         Model model = load_model(*importer, "../assets/MarcusAurelius/MarcusAurelius.obj");
 
+        // push the importer back on the stack so other threads can reuse it
         lock.lock();
         importer_stack.push(importer);
         lock.unlock();
@@ -231,6 +249,8 @@ int main()
     glm::mat4 view = glm::lookAt(cam_pos, glm::vec3(0.0, 0.0, 0.0), glm::vec3(0.0, 1.0, 0.0));
 
     double angle = 0.0;
+
+    Texture marcus_aurelius_tex = load_texture("../assets/MarcusAurelius/MarcusAureliusTexure.jpg");
 
     while(!glfwWindowShouldClose(window))
     {
@@ -316,9 +336,17 @@ int main()
 
         angle += 10.0 * delta_time;
 
-        glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(model2));
-        if (model_loaded) draw_model(loaded_model);
+        glm::mat4 transpose_inverse_model = glm::transpose(glm::inverse(model2));
 
+        glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(model2));
+        glUniformMatrix4fv(transpose_inverse_model_loc, 1, GL_FALSE, glm::value_ptr(transpose_inverse_model));
+
+        if (model_loaded) 
+        {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, marcus_aurelius_tex.id);
+            draw_model(loaded_model);
+        }
         glfwSwapBuffers(window);
     }
 
@@ -354,6 +382,9 @@ static void draw_model(Model& m)
 
 static Texture load_texture(const std::string& path)
 {
+
+    stbi_set_flip_vertically_on_load(true);
+
     int width, height, channels;
     unsigned char* data = stbi_load(path.c_str(), &width, &height, &channels, 0);
     if(!data)
@@ -565,6 +596,9 @@ static void save_scene(/*const Scene& s */ const std::string& path)
 
 static void process_node(Model& model, aiNode* node, const aiScene* scene)
 {
+    // TODO: Placing all the meshes into one buffer might become a problem if there are different textures for each mesh.
+    // In that case we'll have to fix this up a bit and change how models are structured. For no though I am going to keep it like this.
+    // Just know if this is a problem that we should look here first
     for(int i = 0; i < node->mNumMeshes; i++)
     {
         aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
