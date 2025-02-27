@@ -39,9 +39,14 @@ struct Texture
 
 struct MeshGeometry
 {
-    uint32_t vert_arr = UINT32_MAX, vert_buf = UINT32_MAX, indx_buf = UINT32_MAX;
+    uint32_t vert_arr, vert_buf, indx_buf;
     std::vector<Vertex> vertices;
     std::vector<unsigned int> indices;
+};
+
+struct Material
+{
+
 };
 
 // Note if it's laid out like this a model is essentially a collection of other models itself...
@@ -49,17 +54,22 @@ struct MeshGeometry
 // to draw all of the models in that collection
 struct Model
 {
+    glm::mat4 world_matrix = glm::mat4(1.0);
+    std::vector<MeshGeometry> meshes;
+    std::vector<Model> children;
+
+    /*
     std::vector<Vertex> vertices;   // Can probably throw this stuff out once we are done with it?
     std::vector<unsigned int> indices;  // Can probably throw this out once we are done with it?
-    std::vector<Model> children;
     uint32_t vert_arr = UINT32_MAX, vert_buf = UINT32_MAX, indx_buf = UINT32_MAX;
+    */
 };
 
 const uint32_t WIN_WIDTH = 1920;
 const uint32_t WIN_HEIGHT = 1080;
 std::map<int, int> key_map;
 
-static void draw_model(Model& m);
+static void draw_model(glm::mat4& world_matrix, Model& m);
 static void load_model_gpu(Model& m);
 static void load_scene(const std::string& path);
 static Texture load_texture(const std::string& path);
@@ -85,6 +95,10 @@ enum ParseState
     CAMERA,
     OBJECT
 };
+
+// Obviously make these not global variables
+uint32_t model_loc;
+uint32_t transpose_inverse_model_loc;
 
 
 int main()
@@ -170,10 +184,10 @@ int main()
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
     uint32_t shader = compile_shader("../shader/default.vert", "../shader/default.frag");
-    uint32_t model_loc = glGetUniformLocation(shader, "model");
+    model_loc = glGetUniformLocation(shader, "model");
     uint32_t view_loc = glGetUniformLocation(shader, "view");
     uint32_t projection_loc = glGetUniformLocation(shader, "projection");
-    uint32_t transpose_inverse_model_loc = glGetUniformLocation(shader, "transpose_inverse_model");
+    transpose_inverse_model_loc = glGetUniformLocation(shader, "transpose_inverse_model");
 
     glm::mat4 projection = glm::perspective(glm::radians(45.0), (double)WIN_WIDTH / (double)WIN_HEIGHT, 0.1, 100.0);
     glm::mat4 model = glm::mat4(1.0);
@@ -215,7 +229,7 @@ int main()
 
         // Probably don't want to do all this copying so maybe generate a mesh here and then pass
         // a pointer to it as an argument so there is no need to copy it again
-        Model model = load_model(*importer, "../assets/MarcusAurelius/MarcusAurelius.obj");
+        Model model = load_model(*importer, "../assets/toko.fbx");
 
         // push the importer back on the stack so other threads can reuse it
         lock.lock();
@@ -228,7 +242,7 @@ int main()
     });
     
     glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
+    //glEnable(GL_CULL_FACE);
 
     bool model_loaded = false;
 
@@ -332,20 +346,21 @@ int main()
         glDrawElements(GL_TRIANGLES, sizeof(indices) / sizeof(unsigned int), GL_UNSIGNED_INT, NULL);
 
         glm::mat4 model2(1.0);
+        model2 = glm::scale(model2, glm::vec3(0.001));
         model2 = glm::rotate(model2, (float)glm::radians(angle), glm::vec3(0.0, 1.0, 0.0));
 
         angle += 10.0 * delta_time;
 
-        glm::mat4 transpose_inverse_model = glm::transpose(glm::inverse(model2));
+        //glm::mat4 transpose_inverse_model = glm::transpose(glm::inverse(model2));
 
-        glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(model2));
-        glUniformMatrix4fv(transpose_inverse_model_loc, 1, GL_FALSE, glm::value_ptr(transpose_inverse_model));
+        //glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(model2));
+        //glUniformMatrix4fv(transpose_inverse_model_loc, 1, GL_FALSE, glm::value_ptr(transpose_inverse_model));
 
         if (model_loaded) 
         {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, marcus_aurelius_tex.id);
-            draw_model(loaded_model);
+            draw_model(model2, loaded_model);
         }
         glfwSwapBuffers(window);
     }
@@ -365,17 +380,28 @@ int main()
 
 // TODO: Will definitely have to change this up to bind the uniforms it needs but is fine for
 // this first prototype
-static void draw_model(Model& m)
+// Might want to change up how models are stored at some point.
+static void draw_model(glm::mat4& world_matrix, Model& m)
 {
-    if(m.vert_arr != UINT32_MAX)
+
+    // Calculate the model's world matrix
+    glm::mat4 node_world_matrix = world_matrix * m.world_matrix;
+    glm::mat4 transpose_inverse_model = glm::transpose(glm::inverse(node_world_matrix));
+
+    glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(node_world_matrix));
+    glUniformMatrix4fv(transpose_inverse_model_loc, 1, GL_FALSE, glm::value_ptr(transpose_inverse_model));
+    for(MeshGeometry& mesh : m.meshes)
     {
-        glBindVertexArray(m.vert_arr);
-        glDrawElements(GL_TRIANGLES, m.indices.size(), GL_UNSIGNED_INT, NULL);
+        if(mesh.vert_arr != UINT32_MAX)
+        {
+            glBindVertexArray(mesh.vert_arr);
+            glDrawElements(GL_TRIANGLES, mesh.indices.size(), GL_UNSIGNED_INT, NULL);
+        }
     }
 
     for(Model& m : m.children)
     {
-        draw_model(m);
+        draw_model(node_world_matrix, m);
     }
 }
 
@@ -425,41 +451,39 @@ static void load_model_gpu(Model& m)
 {
     uint32_t vert_arr, vert_buf, indx_buf;
 
-    // Only generate buffers if current Model actually has data
-    // (sometimes assimp loads a node that doesn't have any data [usually the root node])
-    if (m.vertices.size() > 0)
+    for (MeshGeometry& mesh : m.meshes)
     {
         glGenVertexArrays(1, &vert_arr);
         glGenBuffers(1, &vert_buf);
         glGenBuffers(1, &indx_buf);
-    
+        
         glBindVertexArray(vert_arr);
         glBindBuffer(GL_ARRAY_BUFFER, vert_buf);
-        glBufferData(GL_ARRAY_BUFFER, m.vertices.size() * sizeof(Vertex), m.vertices.data(), GL_STATIC_DRAW);
-    
+        glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(Vertex), mesh.vertices.data(), GL_STATIC_DRAW);
+        
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, position));
         glEnableVertexAttribArray(0);
-    
+        
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, normal));
         glEnableVertexAttribArray(1);
-    
+        
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, tex_coords));
         glEnableVertexAttribArray(2);
-    
+        
         /*
         glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, color));
         glEnableVertexAttribArray(3);
         */
-    
+        
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indx_buf);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, m.indices.size() * sizeof(unsigned int), m.indices.data(), GL_STATIC_DRAW);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(unsigned int), mesh.indices.data(), GL_STATIC_DRAW);
         glBindVertexArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-
-        m.vert_arr = vert_arr;
-        m.vert_buf = vert_buf;
-        m.indx_buf = indx_buf;
+    
+        mesh.vert_arr = vert_arr;
+        mesh.vert_buf = vert_buf;
+        mesh.indx_buf = indx_buf;
     }
 
     for(Model& m : m.children)
@@ -599,11 +623,12 @@ static void process_node(Model& model, aiNode* node, const aiScene* scene)
     // TODO: Placing all the meshes into one buffer might become a problem if there are different textures for each mesh.
     // In that case we'll have to fix this up a bit and change how models are structured. For no though I am going to keep it like this.
     // Just know if this is a problem that we should look here first
+
     for(int i = 0; i < node->mNumMeshes; i++)
     {
         aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
         
-
+        MeshGeometry mesh_geometry{};
         // Get the vertices
         for(int j = 0; j < mesh->mNumVertices; j++)
         {
@@ -616,9 +641,14 @@ static void process_node(Model& model, aiNode* node, const aiScene* scene)
 
             v.position = temp;
 
-            temp.x = mesh->mNormals[j].x;
-            temp.y = mesh->mNormals[j].y;
-            temp.z = mesh->mNormals[j].z;
+            temp = {};
+
+            if(mesh->mNormals)
+            {
+                temp.x = mesh->mNormals[j].x;
+                temp.y = mesh->mNormals[j].y;
+                temp.z = mesh->mNormals[j].z;
+            }
 
             v.normal = temp;
 
@@ -640,7 +670,7 @@ static void process_node(Model& model, aiNode* node, const aiScene* scene)
             }
 
 
-            model.vertices.push_back(v);
+            mesh_geometry.vertices.push_back(v);
         }
 
         // Get the indices
@@ -650,15 +680,31 @@ static void process_node(Model& model, aiNode* node, const aiScene* scene)
             aiFace* face = &mesh->mFaces[j];
             for(int k = 0; k <face->mNumIndices; k++)
             {
-                model.indices.push_back(face->mIndices[k]);
+                mesh_geometry.indices.push_back(face->mIndices[k]);
             }
         }
 
         if(mesh->mMaterialIndex >= 0)
         {
-            std::cout << "Found a material" << std::endl;
+            aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
+            // Load material ... 
+        }
+
+        model.meshes.push_back(mesh_geometry);
+    }
+
+    // Copy world matrix over to model
+    aiMatrix4x4 world_matrix = node->mTransformation;
+    for(int i = 0; i < 4; i++)
+    {
+        for(int j = 0; j < 4; j++)
+        {
+            // [i][j] = [j][i] here because world_matrix is stored in row major order
+            // but we want it in column major order for opengl
+            model.world_matrix[i][j] = world_matrix[j][i];
         }
     }
+
 
     for(int i = 0; i < node->mNumChildren; i++)
     {
@@ -677,7 +723,7 @@ static Model load_model(Assimp::Importer& importer, const std::string& path)
     const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_JoinIdenticalVertices);
     if(scene == nullptr)
     {
-        std::cerr << "Could Not Load Model: " << path << std::endl;
+        std::cerr << "MODEL LOAD: could not load <path: " << path << ">" << std::endl;
         return Model();
     }
 
