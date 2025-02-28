@@ -9,6 +9,9 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/quaternion.hpp>
+
 #include <assimp/Importer.hpp>      // C++ importer interface
 #include <assimp/scene.h>           // Output data structure
 #include <assimp/postprocess.h>     // Post processing flags
@@ -30,11 +33,19 @@ struct Vertex
     glm::vec2 tex_coords;
 };
 
+enum TextureType
+{
+    DIFFUSE,
+    SPECULAR,
+    NORMAL
+};
+
 struct Texture
 {
     uint32_t width, height, channels;
     uint32_t id = UINT32_MAX;
     std::string path;
+    TextureType type;
 };
 
 struct MeshGeometry
@@ -42,6 +53,7 @@ struct MeshGeometry
     uint32_t vert_arr, vert_buf, indx_buf;
     std::vector<Vertex> vertices;
     std::vector<unsigned int> indices;
+    std::vector<Texture> textures;
 };
 
 struct Material
@@ -63,6 +75,13 @@ struct Model
     std::vector<unsigned int> indices;  // Can probably throw this out once we are done with it?
     uint32_t vert_arr = UINT32_MAX, vert_buf = UINT32_MAX, indx_buf = UINT32_MAX;
     */
+};
+
+struct Transform
+{
+    glm::vec3 position;
+    glm::vec3 scale;
+    glm::quat rotation;
 };
 
 const uint32_t WIN_WIDTH = 1920;
@@ -183,11 +202,15 @@ int main()
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
-    uint32_t shader = compile_shader("../shader/default.vert", "../shader/default.frag");
-    model_loc = glGetUniformLocation(shader, "model");
-    uint32_t view_loc = glGetUniformLocation(shader, "view");
-    uint32_t projection_loc = glGetUniformLocation(shader, "projection");
-    transpose_inverse_model_loc = glGetUniformLocation(shader, "transpose_inverse_model");
+    uint32_t light_shader = compile_shader("../shader/light.vert", "../shader/light.frag");
+    //uint32_t shader = compile_shader("../shader/default.vert", "../shader/default.frag");
+    model_loc = glGetUniformLocation(light_shader, "model");
+    uint32_t view_loc = glGetUniformLocation(light_shader, "view");
+    uint32_t projection_loc = glGetUniformLocation(light_shader, "projection");
+    transpose_inverse_model_loc = glGetUniformLocation(light_shader, "transpose_inverse_model");
+    uint32_t texture_loc = glGetUniformLocation(light_shader, "diffuse0");
+
+    glUniform1i(texture_loc, 0);
 
     glm::mat4 projection = glm::perspective(glm::radians(45.0), (double)WIN_WIDTH / (double)WIN_HEIGHT, 0.1, 100.0);
     glm::mat4 model = glm::mat4(1.0);
@@ -229,7 +252,7 @@ int main()
 
         // Probably don't want to do all this copying so maybe generate a mesh here and then pass
         // a pointer to it as an argument so there is no need to copy it again
-        Model model = load_model(*importer, "../assets/toko.fbx");
+        Model model = load_model(*importer, "../assets/sebastian/Sebastian_C.obj");
 
         // push the importer back on the stack so other threads can reuse it
         lock.lock();
@@ -264,14 +287,17 @@ int main()
 
     double angle = 0.0;
 
-    Texture marcus_aurelius_tex = load_texture("../assets/MarcusAurelius/MarcusAureliusTexure.jpg");
+    //Texture marcus_aurelius_tex = load_texture("../assets/lion/41a13ebbbafc812fc2898b366b7a3c77_color.jpg");
+
+    Transform transform{};
+    transform.rotation = glm::angleAxis(0.0f, glm::vec3(0.0, 1.0, 0.0));
+    glm::mat4 rotation = glm::toMat4(transform.rotation);
 
     while(!glfwWindowShouldClose(window))
     {
 
         if(models_to_process.size() > 0 && model_loaded == false)
         {
-            std::cout << "Models loaded: " << models_to_process.size() << std::endl;
             model_loaded = true;
 
             std::unique_lock<std::mutex> lock(model_mutex);
@@ -336,7 +362,7 @@ int main()
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glClearColor(0.3, 0.3, 0.3, 1.0);
 
-        glUseProgram(shader);
+        glUseProgram(light_shader);
         glUniformMatrix4fv(projection_loc, 1, GL_FALSE, glm::value_ptr(projection));
         glUniformMatrix4fv(view_loc, 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(model_loc, 1, GL_FALSE, glm::value_ptr(model));
@@ -346,9 +372,9 @@ int main()
         glDrawElements(GL_TRIANGLES, sizeof(indices) / sizeof(unsigned int), GL_UNSIGNED_INT, NULL);
 
         glm::mat4 model2(1.0);
-        model2 = glm::scale(model2, glm::vec3(0.001));
-        model2 = glm::rotate(model2, (float)glm::radians(angle), glm::vec3(0.0, 1.0, 0.0));
-
+        //model2 = glm::scale(model2, glm::vec3(0.01));
+        //model2 = glm::rotate(model2, (float)glm::radians(angle), glm::vec3(0.0, 1.0, 0.0));
+        //model2 = rotation * model2;
         angle += 10.0 * delta_time;
 
         //glm::mat4 transpose_inverse_model = glm::transpose(glm::inverse(model2));
@@ -358,8 +384,8 @@ int main()
 
         if (model_loaded) 
         {
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, marcus_aurelius_tex.id);
+            //glActiveTexture(GL_TEXTURE0);
+            //glBindTexture(GL_TEXTURE_2D, marcus_aurelius_tex.id);
             draw_model(model2, loaded_model);
         }
         glfwSwapBuffers(window);
@@ -370,7 +396,7 @@ int main()
     glDeleteBuffers(1, &vertex_buffer);
     glDeleteBuffers(1, &index_buffer);
     glDeleteVertexArrays(1, &vao);
-    glDeleteProgram(shader);
+    glDeleteProgram(light_shader);
 
     glfwDestroyWindow(window);
     glfwTerminate();
@@ -385,6 +411,8 @@ static void draw_model(glm::mat4& world_matrix, Model& m)
 {
 
     // Calculate the model's world matrix
+    // TODO: probably actually want to precompute these at load time and cache them in the model object itself
+    // so we don't need to recompute this every frame
     glm::mat4 node_world_matrix = world_matrix * m.world_matrix;
     glm::mat4 transpose_inverse_model = glm::transpose(glm::inverse(node_world_matrix));
 
@@ -392,6 +420,18 @@ static void draw_model(glm::mat4& world_matrix, Model& m)
     glUniformMatrix4fv(transpose_inverse_model_loc, 1, GL_FALSE, glm::value_ptr(transpose_inverse_model));
     for(MeshGeometry& mesh : m.meshes)
     {
+        uint32_t slot_offset = 0;
+        for(int i = 0; i < mesh.textures.size(); i++)
+        {
+            Texture& tex = mesh.textures[i];
+
+            if(tex.type == TextureType::DIFFUSE)
+            {
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, tex.id);
+                slot_offset++;
+            }
+        }
         if(mesh.vert_arr != UINT32_MAX)
         {
             glBindVertexArray(mesh.vert_arr);
@@ -444,6 +484,8 @@ static Texture load_texture(const std::string& path)
     tex.id = id;
     tex.path = path;
 
+    glBindTexture(GL_TEXTURE_2D, 0);
+
     return tex;
 }
 
@@ -484,6 +526,17 @@ static void load_model_gpu(Model& m)
         mesh.vert_arr = vert_arr;
         mesh.vert_buf = vert_buf;
         mesh.indx_buf = indx_buf;
+
+        // TODO: For the actual asset manager will definitely not want to just
+        // naively load all textures. Should ask asset manager if the texture is already loaded
+        // then load it if it's not
+        for(Texture& tex : mesh.textures)
+        {
+            std::string path = tex.path;
+            TextureType type = tex.type;
+            tex = load_texture(path);
+            tex.type = type;
+        }
     }
 
     for(Model& m : m.children)
@@ -618,7 +671,7 @@ static void save_scene(/*const Scene& s */ const std::string& path)
     */
 }
 
-static void process_node(Model& model, aiNode* node, const aiScene* scene)
+static void process_node(Model& model, aiNode* node, const aiScene* scene, const std::string& directory)
 {
     // TODO: Placing all the meshes into one buffer might become a problem if there are different textures for each mesh.
     // In that case we'll have to fix this up a bit and change how models are structured. For no though I am going to keep it like this.
@@ -686,8 +739,17 @@ static void process_node(Model& model, aiNode* node, const aiScene* scene)
 
         if(mesh->mMaterialIndex >= 0)
         {
-            aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
             // Load material ... 
+            aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
+            aiString string;
+            for(int j = 0; j < material->GetTextureCount(aiTextureType_DIFFUSE); j++)
+            {
+                material->GetTexture(aiTextureType_DIFFUSE, j, &string);
+                Texture tex{};
+                tex.path = directory + "/" + string.C_Str();
+                tex.type = TextureType::DIFFUSE;
+                mesh_geometry.textures.push_back(tex);
+            }
         }
 
         model.meshes.push_back(mesh_geometry);
@@ -711,7 +773,7 @@ static void process_node(Model& model, aiNode* node, const aiScene* scene)
         // Create new model
         Model child_model{};
 
-        process_node(child_model, node->mChildren[i], scene);
+        process_node(child_model, node->mChildren[i], scene, directory);
 
         // Then push back the child_model as a child of the original model
         model.children.push_back(child_model);
@@ -729,7 +791,11 @@ static Model load_model(Assimp::Importer& importer, const std::string& path)
 
     Model model{};
 
-    process_node(model, scene->mRootNode, scene);
+    std::string directory = path.substr(0, path.find_last_of('/'));
+
+    std::cout << directory << std::endl;
+
+    process_node(model, scene->mRootNode, scene, directory);
 
     return model;
 }
