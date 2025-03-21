@@ -1,0 +1,73 @@
+{
+    "Models": [
+        {
+            "name": "Lion",
+            "model-path": "../assets/lion/Sig.gltf",
+            "material": 0
+        },
+        {
+            "name": "PBR Model",
+            "model-path": "../assets/path/to/pbr/model",
+            "material": 1
+        }
+    ],
+
+    "Materials": [
+        {
+            "id": 0,
+            "type": "Blinn-Phong",
+            "normal-map": "../assets/lion/d18ab4d077fad9ea6302bf3deb162390_normal.jpg",
+            "base-color": "../assets/lion/41a13ebbbafc812fc2898b366b7a3c77_color.jpg"
+        },
+        {
+            "id": 1,
+            "type": "PBR",
+            "albedo": "../assets/to/albedo",
+            "metallic": "../assets/to/metallic",
+            "etc": "../"
+        }
+    ],
+
+    "Lights": [
+        {
+            "id": 0,
+            "type": "directional",
+            "pos": [0.0, 0.0, 0.0]
+        },
+        {
+            "id": 1,
+            "type": "point",
+            "pos": [0.0, 0.0, 0.0]
+        }
+    ],
+
+    "Camera": {
+        "pos": [0.0, 0.0, 0.0],
+        "projection": {
+            "type": "projection",
+            "near": 0.01,
+            "far": 100.0
+        }
+    },
+
+    "Entities": [
+        {
+            "name": "Lion (Doesn't have to be the same as the model name)",
+            "model": "Lion",
+            "transform": {
+                "pos": [0.0, 0.0, 0.0],
+                "scale": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 0.0]
+            }
+        },
+        {
+            "name": "PBR Model",
+            "model": "PBR Model",
+            "transform": {
+                "pos": [0.0, 0.0, 0.0],
+                "scale": [0.0, 0.0, 0.0],
+                "rotation": [0.0, 0.0, 0.0, 0.0]
+            }
+        }
+    ]
+}

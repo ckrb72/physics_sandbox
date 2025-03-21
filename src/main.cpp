@@ -24,6 +24,11 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#include "physics.h"
+#include "json.hpp"
+
+#define LOG_DEBUG(str) do { std::cout << str << std::endl; } while(0);
+
 double cam_radius = 5.0;
 struct Vertex
 {
@@ -56,9 +61,18 @@ struct MeshGeometry
     std::vector<Texture> textures;
 };
 
-struct Material
+struct BlinnPhongMaterial
 {
+    Texture diffuse;
+    Texture specular;
+    Texture normal;
+};
 
+struct PBRMaterial
+{
+    Texture albedo;
+    Texture metallic;
+    // More stuff that is needed
 };
 
 // Note if it's laid out like this a model is essentially a collection of other models itself...
@@ -69,19 +83,12 @@ struct Model
     glm::mat4 world_matrix = glm::mat4(1.0);
     std::vector<MeshGeometry> meshes;
     std::vector<Model> children;
-
+    std::string path;
     /*
     std::vector<Vertex> vertices;   // Can probably throw this stuff out once we are done with it?
     std::vector<unsigned int> indices;  // Can probably throw this out once we are done with it?
     uint32_t vert_arr = UINT32_MAX, vert_buf = UINT32_MAX, indx_buf = UINT32_MAX;
     */
-};
-
-struct Transform
-{
-    glm::vec3 position;
-    glm::vec3 scale;
-    glm::quat rotation;
 };
 
 const uint32_t WIN_WIDTH = 1920;
@@ -103,22 +110,23 @@ double previous_time = 0;
 bool cursor_locked = true;
 
 std::mutex model_mutex;
+
+// Make these references so we don't need to copy them. Place them into an array of all models we need to process and then put a reference in this queue.
+// Then each frame pop all models we need to process and process them. After that maybe copy into other array? Will have to see...
 std::queue<Model> models_to_process;
 
-enum ParseState
-{
-    NONE,
-    MESH,
-    TEXTURE,
-    LIGHT,
-    CAMERA,
-    OBJECT
-};
 
 // Obviously make these not global variables
 uint32_t model_loc;
 uint32_t transpose_inverse_model_loc;
 
+
+struct Transform
+{
+    glm::vec3 position;
+    glm::vec3 scale;
+    glm::quat rotation;
+};
 
 int main()
 {
@@ -252,7 +260,7 @@ int main()
 
         // Probably don't want to do all this copying so maybe generate a mesh here and then pass
         // a pointer to it as an argument so there is no need to copy it again
-        Model model = load_model(*importer, "../assets/sebastian/Sebastian_C.obj");
+        Model model = load_model(*importer, "../assets/lion/Sig.gltf");
 
         // push the importer back on the stack so other threads can reuse it
         lock.lock();
@@ -292,6 +300,8 @@ int main()
     Transform transform{};
     transform.rotation = glm::angleAxis(0.0f, glm::vec3(0.0, 1.0, 0.0));
     glm::mat4 rotation = glm::toMat4(transform.rotation);
+
+    PhysicsParticle particle;
 
     while(!glfwWindowShouldClose(window))
     {
@@ -358,6 +368,8 @@ int main()
 
         view = glm::lookAt(cam_pos, glm::vec3(0.0, 0.0, 0.0), glm::vec3(0.0, 1.0, 0.0));
 
+        phys_integrate(particle, delta_time);
+        
         // Render
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glClearColor(0.3, 0.3, 0.3, 1.0);
@@ -391,7 +403,7 @@ int main()
         glfwSwapBuffers(window);
     }
 
-    load_scene("../scenes/test.scene");
+    load_scene("../scenes/scene.json");
 
     glDeleteBuffers(1, &vertex_buffer);
     glDeleteBuffers(1, &index_buffer);
@@ -448,7 +460,7 @@ static void draw_model(glm::mat4& world_matrix, Model& m)
 
 static Texture load_texture(const std::string& path)
 {
-
+    LOG_DEBUG("DEBUG: LOADING TEXTURE <path: " + path + ">");
     stbi_set_flip_vertically_on_load(true);
 
     int width, height, channels;
@@ -485,12 +497,13 @@ static Texture load_texture(const std::string& path)
     tex.path = path;
 
     glBindTexture(GL_TEXTURE_2D, 0);
-
+    LOG_DEBUG("DEBUG: TEXTURE LOADED: SUCCESS <path: " + path + ">");
     return tex;
 }
 
 static void load_model_gpu(Model& m)
 {
+    LOG_DEBUG("DEBUG: LOADING MODEL GPU");
     uint32_t vert_arr, vert_buf, indx_buf;
 
     for (MeshGeometry& mesh : m.meshes)
@@ -539,6 +552,7 @@ static void load_model_gpu(Model& m)
         }
     }
 
+    LOG_DEBUG("DEBUG: MODEL LOADED GPU: SUCCESS");
     for(Model& m : m.children)
     {
         load_model_gpu(m);
@@ -563,105 +577,27 @@ static void calculate_aabb(std::vector<glm::vec3>& vertices)
 
 static void load_scene(const std::string& path)
 {
+    std::ifstream file(path);
+    nlohmann::json data = nlohmann::json::parse(file);
 
-    std::fstream file(path);
-    if(!file.is_open())
+    // Load in all models on one or two threads
+    for(const nlohmann::json& model : data["Models"])
     {
-        std::cerr << "SCENE PARSE: Failed to open file <path: " << path << ">" << std::endl;
-        return;
-    }
-   
-    std::string line;
-    ParseState state = NONE;
-
-    // Note: std::getline() strips the retrieved line of '\n' so no need to take it into account
-    while(std::getline(file, line))
-    {
-        // Don't care about empty lines
-        if (line.compare("") == 0) continue;
-        
-        // Get rid of white spaces
-        line.erase(std::remove_if(line.begin(), line.end(), isspace), line.end());
-
-        // In case I want to set everything to lowercase later on
-        //for(char& c : line) c =std::tolower(c);
-
-        // Don't care about comments
-        if (line[0] == '#') continue;
-
-        
-        // Set up state
-        if(line[0] == '<')
-        {
-            size_t start = line.find('<') + 1; // add 1 so we move past the starting delimiter
-            size_t end = line.find('>');
-            std::string substr = line.substr(start, end - start);
-
-            if (substr.compare("Meshes") == 0) state = ParseState::MESH;
-            else if (substr.compare("Textures") == 0) state = ParseState::TEXTURE;
-            else
-            {
-                std::cerr << "SCENE PARSE: Section <" << substr << "> not valid" << std::endl;
-                return;
-            }
-
-            continue;
-        }
-
-        if(line[0] == '[')
-        {
-            size_t start = line.find('[') + 1; // add 1 so we move past the starting delimiter
-            size_t end = line.find(']');
-            std::string substr = line.substr(start, end - start);
-
-            if (substr.compare("Light") == 0) state = ParseState::LIGHT;
-            else if (substr.compare("Camera") == 0) state = ParseState::CAMERA;
-            else if (substr.compare("Object") == 0) state = ParseState::OBJECT;
-            else
-            {
-                std::cerr << "SCENE PARSE: Object type [" << substr << "] not valid" << std::endl;
-                return;
-            }
-            continue;
-        }
-
-        // Continue parsing...
-
-        switch(state)
-        {
-            case ParseState::NONE:
-            continue;
-            break;
-
-            case ParseState::MESH:
-
-            break;
-
-            case ParseState::TEXTURE:
-
-            break;
-
-            case ParseState::LIGHT:
-
-            break;
-
-            case ParseState::CAMERA:
-
-            break;
-
-            case ParseState::OBJECT:
-
-            break;
-
-            default: 
-            continue;
-            break; 
-        }
-
-        //std::cout << line << std::endl;
+        std::cout << model["name"] << std:: endl;
     }
 
-    file.close();
+    // Load in all lights
+
+    for(const nlohmann::json& light : data["Lights"])
+    {
+        std::cout << light["id"] << std::endl;
+    }
+
+    // Load in camera
+    const nlohmann::json& camera = data["Camera"];
+
+    std::cout << camera["projection"]["type"] << std::endl;
+    
 }
 
 static void save_scene(/*const Scene& s */ const std::string& path)
@@ -669,6 +605,12 @@ static void save_scene(/*const Scene& s */ const std::string& path)
     /*
         Save scene to disk
     */
+
+    // Save all models
+
+    // Save all lights
+
+    // Save camera
 }
 
 static void process_node(Model& model, aiNode* node, const aiScene* scene, const std::string& directory)
@@ -782,6 +724,7 @@ static void process_node(Model& model, aiNode* node, const aiScene* scene, const
 
 static Model load_model(Assimp::Importer& importer, const std::string& path)
 {
+    LOG_DEBUG("DEBUG: LOADING MODEL <path: " + path + ">");
     const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_JoinIdenticalVertices);
     if(scene == nullptr)
     {
@@ -792,11 +735,8 @@ static Model load_model(Assimp::Importer& importer, const std::string& path)
     Model model{};
 
     std::string directory = path.substr(0, path.find_last_of('/'));
-
-    std::cout << directory << std::endl;
-
     process_node(model, scene->mRootNode, scene, directory);
-
+    LOG_DEBUG("DEBUG: MODEL LOADED: SUCCESS <path: " + path + ">");
     return model;
 }
 
